@@ -1,0 +1,328 @@
+// GitFlow Automator — database schema.
+// PostgreSQL (Neon). Prisma is the only path to the DB, giving us parameterised
+// queries (SQL-injection safe) everywhere.
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum WebhookStatus {
+  ACTIVE
+  INACTIVE
+  PENDING
+  ERROR
+}
+
+enum EventStatus {
+  RECEIVED
+  PROCESSING
+  COMPLETED
+  FAILED
+  SKIPPED
+  DUPLICATE
+}
+
+enum JobStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  RETRYING
+}
+
+enum ExecutionStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  PARTIAL
+}
+
+enum ActionType {
+  GITHUB_LABEL
+  GITHUB_COMMENT
+  SLACK_NOTIFY
+  AI_TRIAGE
+}
+
+enum ActionStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  SKIPPED
+}
+
+// Rule trigger types. Kept as a string enum so rules are data, not code.
+enum RuleEventType {
+  ISSUE_OPENED
+  ISSUE_CLOSED
+  ISSUE_EDITED
+  PR_OPENED
+  PR_CLOSED
+  PR_MERGED
+  PUSH
+}
+
+// ---------------------------------------------------------------------------
+// Core identity
+// ---------------------------------------------------------------------------
+
+model User {
+  id        String   @id @default(cuid())
+  githubId  BigInt   @unique
+  login     String
+  name      String?
+  email     String?
+  avatarUrl String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  githubAccount    GitHubAccount?
+  repositories     Repository[]
+  rules            AutomationRule[]
+  slackIntegrations SlackIntegration[]
+
+  @@index([login])
+  @@map("users")
+}
+
+/// Stores the user's GitHub OAuth token (encrypted at rest with AES-256-GCM).
+model GitHubAccount {
+  id             String   @id @default(cuid())
+  userId         String   @unique
+  accessTokenEnc String // AES-256-GCM ciphertext; never logged, never sent to the browser
+  scope          String?
+  tokenType      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("github_accounts")
+}
+
+// ---------------------------------------------------------------------------
+// Repositories & webhooks
+// ---------------------------------------------------------------------------
+
+model Repository {
+  id              String        @id @default(cuid())
+  userId          String
+  githubRepoId    BigInt
+  owner           String
+  name            String
+  fullName        String
+  private         Boolean       @default(false)
+  webhookId       BigInt? // GitHub hook id (for update/delete)
+  webhookSecretEnc String? // per-repo signing secret (encrypted); falls back to global secret
+  webhookStatus   WebhookStatus @default(PENDING)
+  events          String[]      @default([]) // configured event names
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  user           User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  webhookEvents  WebhookEvent[]
+  rules          AutomationRule[]
+  executions     AutomationExecution[]
+
+  @@unique([userId, githubRepoId])
+  @@index([fullName])
+  @@index([githubRepoId])
+  @@map("repositories")
+}
+
+// ---------------------------------------------------------------------------
+// Webhook events (idempotency lives here)
+// ---------------------------------------------------------------------------
+
+model WebhookEvent {
+  id               String      @id @default(cuid())
+  githubDeliveryId String      @unique // <- idempotency key: UNIQUE prevents double-processing
+  githubEvent      String // e.g. "issues", "pull_request", "push"
+  action           String? // e.g. "opened", "closed"
+  repositoryId     String?
+  repositoryFullName String?
+  senderLogin      String?
+  title            String? // issue/PR title (for display); sanitized
+  payload          Json // sanitized payload (secrets/tokens stripped)
+  status           EventStatus @default(RECEIVED)
+  attemptCount     Int         @default(0)
+  errorMessage     String?
+  receivedAt       DateTime    @default(now())
+  processedAt      DateTime?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  repository  Repository?           @relation(fields: [repositoryId], references: [id], onDelete: SetNull)
+  job         Job?
+  executions  AutomationExecution[]
+  actions     ActionExecution[]
+  aiResults   AiResult[]
+  timeline    TimelineEntry[]
+
+  @@index([repositoryId])
+  @@index([createdAt])
+  @@index([status])
+  @@index([githubEvent])
+  @@map("webhook_events")
+}
+
+// ---------------------------------------------------------------------------
+// PostgreSQL-backed job queue
+// ---------------------------------------------------------------------------
+
+model Job {
+  id             String    @id @default(cuid())
+  webhookEventId String    @unique
+  status         JobStatus @default(PENDING)
+  attempts       Int       @default(0)
+  maxAttempts    Int       @default(5)
+  runAt          DateTime  @default(now()) // next eligible run time (backoff)
+  lockedAt       DateTime?
+  lockedBy       String?
+  lastError      String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  webhookEvent WebhookEvent @relation(fields: [webhookEventId], references: [id], onDelete: Cascade)
+
+  @@index([status, runAt])
+  @@map("jobs")
+}
+
+// ---------------------------------------------------------------------------
+// Automation rules
+// ---------------------------------------------------------------------------
+
+model AutomationRule {
+  id           String        @id @default(cuid())
+  userId       String
+  repositoryId String
+  name         String
+  enabled      Boolean       @default(true)
+  eventType    RuleEventType
+  conditions   Json          @default("[]") // array of {field, operator, value}
+  actions      Json          @default("[]") // array of {type, ...config}
+  priority     Int           @default(0)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  user       User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  repository Repository            @relation(fields: [repositoryId], references: [id], onDelete: Cascade)
+  executions AutomationExecution[]
+
+  @@index([repositoryId])
+  @@index([userId])
+  @@index([eventType])
+  @@map("automation_rules")
+}
+
+model AutomationExecution {
+  id             String          @id @default(cuid())
+  webhookEventId String
+  ruleId         String?
+  ruleName       String
+  repositoryId   String?
+  matched        Boolean         @default(true)
+  status         ExecutionStatus @default(PENDING)
+  durationMs     Int?
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  createdAt      DateTime        @default(now())
+
+  webhookEvent WebhookEvent      @relation(fields: [webhookEventId], references: [id], onDelete: Cascade)
+  rule         AutomationRule?   @relation(fields: [ruleId], references: [id], onDelete: SetNull)
+  repository   Repository?       @relation(fields: [repositoryId], references: [id], onDelete: SetNull)
+  actions      ActionExecution[]
+  aiResult     AiResult?
+
+  @@unique([webhookEventId, ruleId])
+  @@index([webhookEventId])
+  @@index([repositoryId])
+  @@map("automation_executions")
+}
+
+model ActionExecution {
+  id             String       @id @default(cuid())
+  executionId    String
+  webhookEventId String
+  type           ActionType
+  status         ActionStatus @default(PENDING)
+  detail         Json?        // config for the action, e.g. {"label":"bug"}
+  result         Json?        // sanitized outcome summary (no secrets)
+  error          String?
+  attempts       Int          @default(0)
+  startedAt      DateTime?
+  finishedAt     DateTime?
+  createdAt      DateTime     @default(now())
+
+  execution    AutomationExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  webhookEvent WebhookEvent        @relation(fields: [webhookEventId], references: [id], onDelete: Cascade)
+
+  @@index([executionId])
+  @@index([webhookEventId])
+  @@map("actions")
+}
+
+model SlackIntegration {
+  id            String   @id @default(cuid())
+  userId        String
+  repositoryId  String? // null = account-wide default
+  webhookUrlEnc String // AES-256-GCM ciphertext; never logged/exposed
+  enabled       Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, repositoryId])
+  @@map("slack_integrations")
+}
+
+model AiResult {
+  id             String   @id @default(cuid())
+  executionId    String   @unique
+  webhookEventId String
+  provider       String
+  model          String
+  summary        String?
+  category       String?
+  priority       String?
+  suggestedLabel String?
+  reason         String?
+  raw            Json?
+  createdAt      DateTime @default(now())
+
+  execution    AutomationExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+  webhookEvent WebhookEvent        @relation(fields: [webhookEventId], references: [id], onDelete: Cascade)
+
+  @@index([webhookEventId])
+  @@map("ai_results")
+}
+
+/// Ordered, human-readable execution timeline for the event details page.
+model TimelineEntry {
+  id             String   @id @default(cuid())
+  webhookEventId String
+  kind           String // machine key, e.g. "rule_matched"
+  message        String // display text
+  meta           Json?
+  at             DateTime @default(now())
+  createdAt      DateTime @default(now())
+
+  webhookEvent WebhookEvent @relation(fields: [webhookEventId], references: [id], onDelete: Cascade)
+
+  @@index([webhookEventId, at])
+  @@map("timeline_entries")
+}
