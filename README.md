@@ -127,8 +127,8 @@ tests/                   Vitest unit + mocked tests
 ## Local Development
 
 ```bash
-git clone <repo>
-cd gitflow-automator
+git clone https://github.com/bobby-nandigam/git-flow.git
+cd git-flow
 
 npm install
 cp .env.example .env.local     # then fill in the values (see below)
@@ -168,13 +168,13 @@ See `.env.example` for the annotated list. Summary:
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `DATABASE_URL` | yes | Neon pooled connection (runtime) |
-| `DIRECT_URL` | yes | Neon direct connection (migrations) |
+| `DATABASE_URL_UNPOOLED` | yes | Neon direct connection for `prisma migrate` (auto-set by Neon's Vercel integration) |
 | `AUTH_SECRET` | yes | Session signing + secret encryption key (`openssl rand -base64 32`) |
-| `AUTH_URL` / `NEXTAUTH_URL` | yes | Public base URL |
 | `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` | yes | OAuth app |
-| `GITHUB_WEBHOOK_SECRET` | yes | Fallback/global webhook signing secret |
-| `WORKER_SECRET` | yes | Protects the cron/worker endpoint |
-| `APP_PUBLIC_URL` | yes | Base URL used to build the webhook payload URL |
+| `GITHUB_WEBHOOK_SECRET` | yes | Fallback/global webhook signing secret (`openssl rand -hex 32`) |
+| `WORKER_SECRET` | yes | Protects the cron/worker endpoint (`openssl rand -hex 32`) |
+| `AUTH_URL` / `NEXTAUTH_URL` | no | Public base URL. Optional in production — the app sets `trustHost` and infers it from the request; set it only for local tunnels. |
+| `APP_PUBLIC_URL` | no | Base URL used to build the webhook payload URL; falls back to `AUTH_URL`, then the request host |
 | `SLACK_WEBHOOK_URL` | no | Fallback Slack webhook (per-repo config lives in DB) |
 | `AI_PROVIDER` | no | `gemini` \| `groq` \| `none` |
 | `GEMINI_API_KEY` / `GEMINI_MODEL` | no | Gemini triage |
@@ -224,20 +224,44 @@ lost.
 
 ## Database Setup
 
-1. Create a free Neon project at <https://neon.tech> (no credit card).
-2. Copy the **pooled** connection string into `DATABASE_URL` and the
-   **direct** one into `DIRECT_URL`.
-3. `npm run db:migrate` (local) or it runs via `prisma migrate deploy` in CI/deploy.
+1. Create a free Neon project at <https://neon.tech> (no credit card), or add the
+   **Neon** integration from the Vercel Marketplace — it provisions the database
+   and injects `DATABASE_URL`, `DATABASE_URL_UNPOOLED` and friends into the
+   project automatically.
+2. For local dev, copy the **pooled** connection string into `DATABASE_URL` and
+   the **direct** (unpooled) one into `DATABASE_URL_UNPOOLED`.
+3. `npm run db:migrate` (local). On Vercel, `prisma migrate deploy` runs
+   automatically as part of the build (see Deployment).
 
 ## Deployment
 
-1. Push the repo to GitHub and import it into **Vercel**.
-2. Add all env vars in the Vercel project (Production + Preview).
-3. Set `AUTH_URL`, `NEXTAUTH_URL` and `APP_PUBLIC_URL` to your Vercel URL.
-4. Update the GitHub OAuth callback URL to the Vercel domain.
-5. Run migrations against Neon: `npm run db:migrate:deploy` (or a Vercel build
-   step / one-off `vercel env pull` + local run).
-6. `vercel.json` registers the cron sweep for `/api/cron/process-jobs`.
+Deployed on **Vercel** at <https://abstrabit.vercel.app>.
+
+1. Push the repo to GitHub and import it into **Vercel** (or `vercel link` an
+   existing project).
+2. Add the **Neon** database (Vercel Marketplace → Storage). It injects
+   `DATABASE_URL` and `DATABASE_URL_UNPOOLED` into all environments.
+3. Add the remaining secrets to the project (Production, Preview, Development):
+
+   ```bash
+   for e in production preview development; do
+     printf '%s' "$(openssl rand -base64 32)" | vercel env add AUTH_SECRET "$e"
+     printf '%s' "$(openssl rand -hex 32)"    | vercel env add GITHUB_WEBHOOK_SECRET "$e"
+     printf '%s' "$(openssl rand -hex 32)"    | vercel env add WORKER_SECRET "$e"
+     printf '%s' "<client-id>"                | vercel env add GITHUB_CLIENT_ID "$e"
+     printf '%s' "<client-secret>"            | vercel env add GITHUB_CLIENT_SECRET "$e"
+   done
+   ```
+
+4. Create a GitHub OAuth App and set its **Authorization callback URL** to
+   `https://YOUR_DOMAIN/api/auth/callback/github`.
+5. Deploy: `vercel --prod`. Migrations run automatically — `vercel.json` sets the
+   build command to `prisma generate && prisma migrate deploy && next build`, so
+   the Neon schema is applied on every deploy.
+6. `vercel.json` also registers the cron sweep for `/api/cron/process-jobs`.
+
+`AUTH_URL`/`NEXTAUTH_URL`/`APP_PUBLIC_URL` are optional in production (the app
+uses `trustHost` and infers the URL from the request).
 
 > **Free-plan note:** Vercel Hobby cron runs at most **once per day**. The
 > primary processing path is the webhook's `waitUntil` (immediate) — the cron is
