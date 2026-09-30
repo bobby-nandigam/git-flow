@@ -235,7 +235,7 @@ lost.
 
 ## Deployment
 
-Deployed on **Vercel** at <https://abstrabit.vercel.app>.
+Deployed on **Vercel** at <https://abstrabit-beta.vercel.app>.
 
 1. Push the repo to GitHub and import it into **Vercel** (or `vercel link` an
    existing project).
