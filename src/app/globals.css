@@ -1,0 +1,89 @@
+@import "tailwindcss";
+
+/*
+  GitFlow Automator — design tokens.
+  Developer-operations aesthetic: dark-first, restrained, high-contrast,
+  no gradients-as-decoration. Colors are semantic tokens consumed by utilities.
+*/
+
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas,
+    monospace;
+
+  --color-bg: hsl(222 24% 6%);
+  --color-surface: hsl(222 20% 9%);
+  --color-surface-2: hsl(222 18% 12%);
+  --color-border: hsl(222 14% 18%);
+  --color-border-strong: hsl(222 14% 26%);
+  --color-fg: hsl(210 20% 96%);
+  --color-fg-muted: hsl(215 14% 62%);
+  --color-fg-subtle: hsl(215 12% 46%);
+
+  --color-primary: hsl(152 62% 46%);
+  --color-primary-fg: hsl(152 60% 8%);
+  --color-accent: hsl(199 89% 56%);
+
+  --color-success: hsl(152 62% 46%);
+  --color-warning: hsl(38 92% 55%);
+  --color-danger: hsl(0 72% 58%);
+  --color-info: hsl(199 89% 56%);
+  --color-pending: hsl(215 16% 55%);
+
+  --radius: 0.6rem;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+/* Light mode override (dashboard is dark-first but respects the toggle). */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --color-bg: hsl(210 40% 98%);
+  --color-surface: hsl(0 0% 100%);
+  --color-surface-2: hsl(210 40% 96%);
+  --color-border: hsl(214 20% 88%);
+  --color-border-strong: hsl(214 20% 78%);
+  --color-fg: hsl(222 30% 12%);
+  --color-fg-muted: hsl(215 16% 40%);
+  --color-fg-subtle: hsl(215 14% 55%);
+  --color-primary: hsl(152 58% 38%);
+  --color-primary-fg: hsl(0 0% 100%);
+}
+
+* {
+  border-color: var(--color-border);
+}
+
+html,
+body {
+  background-color: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  min-height: 100dvh;
+}
+
+/* Thin, unobtrusive scrollbars for the dev-tool feel. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: 999px;
+  border: 2px solid var(--color-bg);
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+}
